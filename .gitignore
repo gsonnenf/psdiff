@@ -1,0 +1,18 @@
+.vscode/
+.pytest_cache/
+*.code-workspace
+
+# Ignore Python cache
+__pycache__/
+*.pyc
+
+# Ignore logs and temporary files
+*.log
+*.tmp
+tmp/
+# Ignore virtual environments
+venv/
+
+# Ignore system files
+.DS_Store
+Thumbs.db
