@@ -1,7 +1,7 @@
 .vscode/
 .pytest_cache/
 *.code-workspace
-
+.psdiff/
 # Ignore Python cache
 __pycache__/
 *.pyc
