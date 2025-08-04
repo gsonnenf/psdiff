@@ -6,18 +6,18 @@ from psdiff import Psdiff
 
 def main():
     psdiff = Psdiff()
-    psdiff.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    psdiff.snapshot_dir.mkdir(parents=True, exist_ok=True)
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("-s", action="store_true")
     parser.add_argument("-c", type=int)
     args = parser.parse_args()
 
     if args.s:
-        psdiff.create_checkpoint()
+        psdiff.create_snapshot()
     elif args.c is not None:
-        psdiff.compare_checkpoint(args.c)
+        psdiff.compare_snapshot(args.c)
     elif len(sys.argv) == 1:
-        psdiff.compare_checkpoint()
+        psdiff.compare_snapshot()
     else:
         usage()
         sys.exit(1)
@@ -25,9 +25,9 @@ def main():
 def usage():
     """Print usage instructions for the psdiff script."""
     print(f"""Usage:
-  psdiff          # compare with latest checkpoint
+  psdiff          # compare with latest snapshot
   psdiff -s        # saves a new ps snapshot
-  psdiff -c N      # compare with checkpoint N""")
+  psdiff -c N      # compare with snapshot N""")
     
 
 if __name__ == "__main__":
