@@ -10,6 +10,8 @@ import shlex
 from collections import OrderedDict
 from urllib.parse import quote, unquote
 
+import urllib
+
 def DEBUG(string):
     print(string)
 
@@ -31,118 +33,36 @@ class Psdiff():
     def create_snapshot(self, num=None):
         '''Create a new snapshot of the current process list.'''
         outfile = self.__create_snapshot_path(num) 
-        self.__write_ps_snapshot(self.__create_ps_snapshot(), outfile)
-        #TODO: add ass debug print(f"snapshot created: {outfile}")
+        self.__write_snapshot_to_file(self.__create_ps_snapshot(), outfile)
+        print(f"snapshot created: {outfile}")
         return outfile
-
-    def compare_snapshot(self, num=None):
-        '''Compare the current process list with a saved snapshot.'''
-        if (num is None): num = self.__get_last_snapshot_number()
-        path = Path(self.__get_snapshot_path(num))
-        if not path.exists():
-            print(f"snapshot {num} does not exist: {path}", file=sys.stderr)
-            sys.exit(1)
-        self.__print_ps_diff(self.__read_ps_snapshot(path), self.__create_ps_snapshot())
-
+    
     def print_snapshot(self, num=None):
-        '''Prints a snapshot that was saved or the current snapshot'''
-        ps_list = self.__create_ps_snapshot() if (num is None) else self.__get_snapshot(num)
+        '''Prints a snapshot that was saved or the current snapshot'''       
+        ps_list = self.__create_ps_snapshot() if (num is None) else self.__load_saved_snapshot(num)
         print("\n")
-        for proc in ps_list: print( self.__line_formatter(proc, -1) )
+        for proc in ps_list: print( self.__line_formatter_display(proc) )
 
     def print_diff(self, num1 = None, num2 = None):
-        list1 = self.__get_snapshot(num1) 
-        list2 = self.__get_snapshot(num2) if (num2 != None) else self.__create_ps_snapshot()
+        list1 = self.__load_saved_snapshot(num1) 
+        list2 = self.__load_saved_snapshot(num2) if (num2 != None) else self.__create_ps_snapshot()
 
         (diff1,diff2) = self.__get_diff(list1, list2)
         if not diff1 and not diff2: 
             print ("No differences found.")
         else:
-            for proc in diff1: print( "-" + self.__line_formatter(proc, -1) )
-            for proc in diff2: print( "+" + self.__line_formatter(proc, -1) )
+            for proc in diff1: print( "-" + self.__line_formatter_display(proc) )
+            for proc in diff2: print( "+" + self.__line_formatter_display(proc) )
 
-    # --- Internal methods -> snapshot ---
-    def __create_ps_snapshot(self):
+
+    def delete_snapshots(self):
         '''
-        Get a snapshot of current processes, filtering out kworker and the current process itself.
-        :return: List of dicts with keys: pid, ppid, username, name, cmdline.
-        '''       
-        # Body
-        self.__maintenance_check()
-        ps_list = self.__get_ps()
-        ps_list = self.__snapshot_filter(ps_list)
-        for process in ps_list:
-            self.__snapshot_stringlist_to_string(process, 'name')
-            self.__snapshot_stringlist_to_string(process, 'cmdline')
-        ps_list = sorted(ps_list, key=lambda x: x["pid"] ) 
-        return ps_list
+        Deletes all the snapshots out of the snapshot directory
+        '''
+        for file in self.snapshot_dir.glob(f"{self.snapshot_prefix}.*"):
+            if file.is_file(): file.unlink()
 
-    def __read_ps_snapshot(self,input_file):
-        '''Read a process snapshot from a file and return a list of process.'''
-        process_list = []
-        with open(input_file, 'r') as file:
-            for line in file:
-                try:
-                    # Split into 5 parts: pid, ppid, username, name (quoted), cmdline (quoted)
-                    parts = shlex.split(line)
-                    if len(parts) < 6:
-                        continue
-                    pid = int(parts[0])
-                    ppid = int(parts[1])
-                    gid = int(parts[2])
-                    username = parts[3]
-                    name = parts[4]        # strip quotes
-                    cmdline = parts[5]  # strip quotes
-                    
-                    process_list.append({
-                        'pid': pid,
-                        'ppid': ppid,
-                        'gid': gid,
-                        'username': username or '""',
-                        'name': name or '""',
-                        'cmdline': cmdline or '""'
-                    })
-        
-                except Exception: continue
-        
-        process_list = sorted(process_list, key=lambda x: x["pid"] )           
-        return process_list
-
-    def __write_ps_snapshot(self, process_list, output_file):
-        '''Write the process list to a file in a readable format.'''
-        with open(output_file, 'w') as f:
-            for proc in process_list:
-                f.write(self.__line_formatter(proc,1) + "\n")
-        return output_file
-
-    def __get_snapshot(self,num=None):
-        '''Get the formatted process list object from a snapshot.'''
-        if (num is None): num = self.__get_last_snapshot_number()
-        if (num < 0):
-            print("There are no saved snapshots.")
-            sys.exit(1)
-        path = Path(self.__get_snapshot_path(num))
-        if not path.exists():
-            print(f"snapshot {num} does not exist: {path}", file=sys.stderr)
-            sys.exit(1)
-        return self.__read_ps_snapshot(path)
-
-    def __get_ps(self):
-        ps_list = []
-        for proc in psutil.process_iter(['pid', 'ppid', 'username', 'name', 'cmdline']):
-            try:                    
-                ps_list.append({
-                    'pid': proc.info.get('pid'),
-                    'ppid': proc.info.get('ppid'),
-                    'gid': psutil.Process(proc.info.get('pid')).gids().real,
-                    'username': proc.info.get('username', ''),
-                    'name': proc.info.get('name', ''),
-                    'cmdline': proc.info.get('cmdline','')
-                }) 
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess): continue
-        return ps_list
-    
-    # --- Internal Method -> Print diff ---
+     # --- Internal Method -> Print diff ---
     def __get_diff(self, lista, listb):
         '''
         Find symmetric difference between two lists of dicts by converting dicts to tuples of sorted items.
@@ -162,12 +82,66 @@ class Psdiff():
         only_in_b = sorted((_tuple_to_dict(t) for t in only_in_b_tuples), key=lambda d: d['pid'] )
 
         return (only_in_a, only_in_b)
-        #for proc in only_in_a: print( "-" + self.__line_formatter(proc,-1) )
-        #for proc in only_in_b: print( "+" + self.__line_formatter(proc,-1) )
 
+    # --- Internal methods -> snapshot generation ---
+    def __create_ps_snapshot(self):
+        '''
+        Get a snapshot of current processes, filtering out kworker and the current process itself.
+        :return: List of dicts with keys: pid, ppid, username, name, cmdline.
+        '''       
+        # Body
+        self.__maintenance_check()
+        ps_list = self.__get_ps()
+        ps_list = self.__snapshot_filter(ps_list)
+        ps_list.sort(key=lambda x: x["pid"])
+        return ps_list
+    
+    def __get_ps(self):
+        ps_list = []
+        for proc in psutil.process_iter(['pid', 'ppid', 'username', 'name', 'cmdline']):
+            try:
+                proc.info['gid'] = 0
+                #proc.info['gid'] = psutil.Process(proc.info.get('pid')).gids()                    
+                ps_list.append(self.__line_formatter_import(proc.info)) 
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess): continue
+        return ps_list
+
+     # --- Internal methods -> File I/O ---
+    def __load_saved_snapshot(self,num=None):
+        '''Get the formatted process list object from a snapshot.'''
+        if (num is None): num = self.__get_last_snapshot_number()
+        if (num < 0):
+            print("There are no saved snapshots.")
+            sys.exit(1)
+        path = Path(self.__get_snapshot_path(num))
+        if not path.exists():
+            print(f"snapshot {num} does not exist: {path}", file=sys.stderr)
+            sys.exit(1)
+        return self.__read_snapshot_from_file(path)
+    
+    
+    def __read_snapshot_from_file(self,input_file):
+        '''Read a process snapshot from a file and return a list of process.'''
+        ps_list = []  
+        with open(input_file, 'r') as file:
+            for line in file:
+                try:
+                    ps_list.append(self.__line_formatter_read_file(line))        
+                except Exception as e: 
+                    print (f"Error in snapshot file: {e}" )
+                    continue               
+        ps_list.sort(key=lambda x: x["pid"])
+        return ps_list
+
+    def __write_snapshot_to_file(self, ps_list, output_file):
+        '''Write the process list to a file in a readable format.'''
+        with open(output_file, 'w') as f:
+            for proc in ps_list:
+                f.write(self.__line_formatter_write_file(proc) + "\n")
+        return output_file
 
     
-
+   
     # --- Internal method -> snapshot management --- 
     def __create_snapshot_path(self,num = None):
         num = num if num is not None else (self.__get_last_snapshot_number() + 1)
@@ -195,46 +169,75 @@ class Psdiff():
                 continue
         return last
     
-       # --- Internal methods -> Helpers ---  
-     #TODO: make abstract in the future
-    def __snapshot_filter(self, process_list):
+     
+    # --- Internal methods -> Text Rendering ---  
+    def __line_formatter_import(self, proc_info):
+        '''Formats a string based process dictionary from the proc.info format'''
+        def _reformat_string_list(param): return ' '.join(param) if isinstance(param,list) else param
+        
+        return {
+                'pid': proc_info.get('pid', -1),
+                'ppid':  proc_info.get('ppid', -1),
+                'gid': proc_info.get('gid').real,
+                'username':  _reformat_string_list(proc_info.get('username','')),
+                'name':_reformat_string_list(proc_info.get('name','')),
+                'cmdline':_reformat_string_list(proc_info.get('cmdline',''))
+            }
+
+    def __line_formatter_display(self, ps_dict ):
+        '''Render a single line of ps output for display.'''
+        pid = ps_dict['pid']
+        ppid = ps_dict['ppid']
+        gid = ps_dict['gid']
+        username = ps_dict['username']
+        name = ps_dict['name']
+        cmdline = ps_dict['cmdline']
+
+        if (username == ""): username = "''"
+        if (name == ""): name = "''"
+        if (cmdline == ""): cmdline = "''"
+
+        return f"{pid:>6} {ppid:>6} {gid:>6} {username:<8} {name:<24} {cmdline}"
+    
+
+    def __line_formatter_read_file(self, ps_line):
+        '''Parses a single line of ps from a file input'''
+        parts = shlex.split(ps_line)
+        return { 
+            'pid':int(parts[0]),
+            'ppid':int(parts[1]),
+            'gid':int(parts[2]),
+            'username': parts[3],
+            'name': parts[4],     
+            'cmdline': parts[5] 
+        }
+    
+    def __line_formatter_write_file(self, ps_dict): #urllib.parse
+        '''Render a single line of ps output for file output.'''
+        pid = ps_dict['pid']
+        ppid = ps_dict['ppid']
+        gid = ps_dict['gid']
+        username = json.dumps(ps_dict['username'])
+        name = json.dumps(ps_dict['name'])
+        cmdline = json.dumps(ps_dict['cmdline'])
+        '''Render a single line of ps output for display.'''
+              
+        return (f"{pid:>6} {ppid:>6} {gid:>6} {username:<8} {name:<24} {cmdline}")
+    
+
+     # --- Internal methods -> Helpers ---  
+     #make abstract in the future
+    def __snapshot_filter(self, ps_list):
         '''Filter out kworker and the current running process itself.'''
         current_pid = os.getpid()
         return [
-            proc for proc in process_list
+            proc for proc in ps_list
             if not (
                 (proc['name'].startswith('kworker/') and proc['username'] == 'root') or
                 proc['pid'] == current_pid
             )
         ]     
     
-    def __snapshot_stringlist_to_string(self, psdict, item_name): 
-        '''Reformats list of strings from ps into a single string.'''
-        item = psdict.get(item_name, "")
-        if isinstance(item, list):
-            item = [arg for arg in item if arg.strip()]
-            item = shlex.join(item)
-        psdict[item_name] = item.strip("'")
-
-    def __line_formatter(self, proc_dict, add_quotes = 0):
-        '''Render a single line of ps output for display.'''
-        pid = str(proc_dict.get('pid', ''))
-        ppid = str(proc_dict.get('ppid', ''))
-        gid = str(proc_dict.get('gid', ''))
-        username = proc_dict.get('username') or ''
-        name_quote = proc_dict.get('name') or ''
-        cmdline_quote = proc_dict.get('cmdline') or ''
-
-        if add_quotes > 0: 
-            name_quote = f"'{name_quote}'"
-            cmdline_quote = f"'{cmdline_quote}'"
-        if add_quotes < 0: 
-            name_quote = name_quote.strip()
-            cmdline_quote = cmdline_quote.strip()
-            if (name_quote == ''): name_quote = '""'
-            if (cmdline_quote == ''): cmdline_quote = '""' 
-
-        return (f"{pid:>6} {ppid:>6} {gid:>6} {username:<8} {name_quote:<24} {cmdline_quote}")
     
     def __maintenance_check(self):
         '''Check the size of the snapshot directory and warn if it exceeds MAX_BYTES.'''
